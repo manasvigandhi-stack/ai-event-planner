@@ -9,11 +9,11 @@ A fully functional, polished **Streamlit** web application that acts as your AI-
 
 | Step | Feature |
 |---|---|
-| **Step 1** | Vibe Calibration — event type, style tags, Hard Nos, AI Reality Preview |
-| **Step 2** | 100-Point Budget Engine — interactive sliders, live donut chart, validation |
-| **Step 3** | What-If Budget Simulator — Priority Shield algorithm + DIY AI cards |
-| **Step 4A** | Smart Timeline — date-aware task checklist with urgency tracking |
-| **Step 4B** | Vendor Quote Analyzer — regex parser + Gemini AI commentary |
+| **Step 1** | Vibe Calibration — event type, custom event types, style tags, Hard Nos, AI Reality Preview |
+| **Step 2** | 100-Point Budget Engine — interactive sliders, custom category support, live Plotly donut chart, validation |
+| **Step 3** | What-If Budget Simulator — Priority Shield algorithm with 30% safety floor + DIY AI cards |
+| **Step 4A** | Smart Timeline — date-aware task checklist with urgency tracking and reactive progress |
+| **Step 4B** | Vendor Quote Analyzer — regex parser, tax breakdown table + Gemini AI commentary |
 
 ---
 
@@ -28,7 +28,7 @@ A fully functional, polished **Streamlit** web application that acts as your AI-
 C:\msys64\mingw64\bin\python3.exe -m venv .venv
 
 # Install dependencies
-.venv\bin\pip install -r requirements.txt
+.\.venv\bin\pip install -r requirements.txt
 ```
 
 ### 3. (Optional) Configure Gemini API Key
@@ -51,14 +51,21 @@ Or:
 
 The app opens automatically in your browser at **http://localhost:8501** 🎉
 
+### 5. Run Unit Tests
+```powershell
+.\.venv\bin\python.exe -m pytest tests/test_app.py -v
+```
+
 ---
 
 ## 📁 Project Structure
 
 ```
 ai-event-planner/
-├── app.py              # Main Streamlit application (~770 lines)
+├── app.py              # Main Streamlit application
 ├── requirements.txt    # Python dependencies
+├── tests/
+│   └── test_app.py     # Automated unit test suite
 ├── .env.example        # API key template
 ├── .gitignore
 └── README.md
@@ -69,11 +76,13 @@ ai-event-planner/
 ## 🛡️ Priority Shield Algorithm
 
 When a budget drop is simulated:
-1. Categories are **ranked by point allocation** (highest → lowest)
-2. **Top 2 highest** = 🛡️ PROTECTED — budget untouched
-3. **Bottom 2** = ⚡ COMPRESSED — absorb up to 85% cut each
-4. **AI Recommendation Cards** suggest DIY/local alternatives for compressed categories
-5. Remaining deficit is flagged if lower-priority cuts aren't enough
+1. Categories are **ranked by point allocation** (highest → lowest).
+2. **Top 2 highest-priority categories** = 🛡️ **PROTECTED** — original allocations remain untouched.
+3. Categories with **0 points / ₹0 allocations** are **automatically excluded** from absorbing cuts.
+4. The deficit is **proportionally distributed** across all active compressible categories.
+5. **30% Safety Floor**: Ensures no compressible category drops below 30% of its initial budget allocation (capping compression at 70%).
+6. If the deficit cannot be fully absorbed within the safety floor, an unabsorbed deficit banner is displayed with strategic advice.
+7. **AI Recommendation Cards** suggest tailored DIY and local-vendor alternatives for compressed categories matching the event's vibe and Hard Nos.
 
 ---
 
@@ -81,10 +90,12 @@ When a budget drop is simulated:
 
 | Package | Purpose |
 |---|---|
-| `streamlit` | UI framework |
-| `google-generativeai` | Gemini AI integration |
-| `plotly` | Interactive donut & bar charts |
-| `python-dotenv` | `.env` file support |
+| `streamlit` | Modern interactive web UI framework |
+| `google-generativeai` | Gemini AI integration & LLM SDK |
+| `requests` | Direct Gemini REST API fallback |
+| `plotly` | Interactive donut and before/after comparison bar charts |
+| `python-dotenv` | Local `.env` configuration support |
+| `pytest` | Automated unit testing framework |
 
 ---
 
@@ -99,4 +110,3 @@ All AI features have **built-in template fallbacks** — the app is fully functi
 ---
 
 *Built with ❤️ using Streamlit + Google Gemini*
-

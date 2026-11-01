@@ -12,18 +12,18 @@
 #   4. Smart Timeline & Vendor Quote Parser
 # =============================================================================
 
+import os
 import re
-import math
 from datetime import date, timedelta
+from typing import Any, Dict, List, Optional
 
+import requests
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
 
 # ── Optional: Load .env for local development ─────────────────────────────────
 try:
     from dotenv import load_dotenv
-    import os
     load_dotenv()
     _ENV_KEY = os.getenv("GEMINI_API_KEY", "")
 except ImportError:
@@ -191,6 +191,24 @@ CATEGORIES = {
     "deco":  {"label": "🌸 Decoration & Lighting",    "color": "#10b981"},
 }
 
+# Module-level compiled regex patterns for vendor quote parsing efficiency
+ITEM_PATTERN = re.compile(
+    r"^(.+?)\s*[-:]\s*[₹$₨Rs\.]?\s*([\d,]+(?:\.\d{1,2})?)",
+    re.MULTILINE | re.IGNORECASE,
+)
+GST_PATTERN = re.compile(
+    r"(?:GST|CGST|SGST|IGST|Service\s+(?:Charge|Tax)|VAT|Tax)[^\n]*",
+    re.IGNORECASE,
+)
+TAX_PATTERN = re.compile(
+    r"GST|CGST|SGST|IGST|service\s+charge|VAT|tax",
+    re.IGNORECASE,
+)
+TOTAL_PATTERN = re.compile(
+    r"\btotal\b|\bgrand\s+total\b|\bnet\b",
+    re.IGNORECASE,
+)
+
 # Task templates keyed by event type (days_before = days before the event)
 TASK_TEMPLATES = {
     "Wedding": [
@@ -282,7 +300,7 @@ DIY_TEMPLATES = {
 # =============================================================================
 # SESSION STATE INITIALIZATION
 # =============================================================================
-def init_session_state():
+def init_session_state() -> None:
     """Initialize all session state variables with default values."""
     defaults = {
         # App navigation
@@ -305,6 +323,7 @@ def init_session_state():
         "points_photo": 25,
         "points_venue": 25,
         "points_deco": 15,
+        "custom_categories": {},
         "budget_locked": False,
 
         # Step 3 — What-If Simulator
@@ -331,8 +350,8 @@ def init_session_state():
             st.session_state[key] = val
 
 
-def set_nav_page(page_name: str):
-    """Helper to update navigation selection across both state keys."""
+def set_nav_page(page_name: str) -> None:
+    """Update navigation selection across state keys and trigger immediate rerun."""
     st.session_state["nav_page"] = page_name
     st.session_state["nav_selection"] = page_name
     st.rerun()
@@ -341,7 +360,14 @@ def set_nav_page(page_name: str):
 # =============================================================================
 # GEMINI HELPER
 # =============================================================================
-def get_gemini_model():
+@st.cache_resource
+def get_cached_gemini_model(api_key: str) -> Any:
+    """Load and cache the Gemini GenerativeModel instance for a given API key."""
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel("gemini-1.5-flash")
+
+
+def get_gemini_model() -> Any:
     """Return a configured Gemini model instance, or None if unavailable."""
     if not _GENAI_AVAILABLE:
         return None
@@ -349,15 +375,13 @@ def get_gemini_model():
     if not key:
         return None
     try:
-        genai.configure(api_key=key)
-        return genai.GenerativeModel("gemini-1.5-flash")
+        return get_cached_gemini_model(key)
     except Exception:
         return None
 
 
 def gemini_generate_rest(prompt: str, api_key: str) -> str:
     """Call Gemini REST API directly using standard requests library."""
-    import requests
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -394,21 +418,23 @@ def gemini_generate(prompt: str, fallback: str) -> str:
     # Try direct REST API fallback
     try:
         return gemini_generate_rest(prompt, key)
-    except Exception as e:
+    except Exception:
         return fallback
 
 
 # =============================================================================
 # UTILITY HELPERS
 # =============================================================================
-def currency_symbol() -> str:
-    curr = st.session_state.get("currency", "INR") if "currency" in st.session_state else "INR"
+def currency_symbol(currency: Optional[str] = None) -> str:
+    """Return the currency symbol ('₹' or '$') for the active or provided currency."""
+    curr = currency or (st.session_state.get("currency", "INR") if "currency" in st.session_state else "INR")
     return "₹" if curr == "INR" else "$"
 
 
-def fmt_amount(amount: float) -> str:
-    sym = currency_symbol()
-    curr = st.session_state.get("currency", "INR") if "currency" in st.session_state else "INR"
+def fmt_amount(amount: float, currency: Optional[str] = None) -> str:
+    """Format a numeric amount into a localized currency string."""
+    sym = currency_symbol(currency)
+    curr = currency or (st.session_state.get("currency", "INR") if "currency" in st.session_state else "INR")
     if curr == "INR":
         # Indian number formatting: 1,00,000
         amount_int = int(round(amount))
@@ -430,30 +456,33 @@ def fmt_amount(amount: float) -> str:
 
 
 def points_to_amount(points: int, total: float) -> float:
+    """Calculate budget amount allocated based on point score."""
     return (points / 100) * total
 
 
+def get_all_categories() -> Dict[str, Dict[str, str]]:
+    """Return merged dictionary of default and custom user-defined categories."""
+    merged = dict(CATEGORIES)
+    if "custom_categories" in st.session_state and isinstance(st.session_state.custom_categories, dict):
+        merged.update(st.session_state.custom_categories)
+    return merged
+
+
+def get_points_dict() -> Dict[str, int]:
+    """Return dictionary mapping all category keys to their assigned points."""
+    all_cats = get_all_categories()
+    return {k: int(st.session_state.get(f"points_{k}", 0)) for k in all_cats}
+
+
 def total_points() -> int:
-    return (
-        st.session_state.points_food
-        + st.session_state.points_photo
-        + st.session_state.points_venue
-        + st.session_state.points_deco
-    )
-
-
-def get_points_dict() -> dict:
-    return {
-        "food":  st.session_state.points_food,
-        "photo": st.session_state.points_photo,
-        "venue": st.session_state.points_venue,
-        "deco":  st.session_state.points_deco,
-    }
+    """Calculate total points allocated across all active categories."""
+    return sum(get_points_dict().values())
 
 
 # =============================================================================
 # PRIORITY SHIELD ALGORITHM
 # =============================================================================
+@st.cache_data
 def apply_priority_shield(points: dict, drop_pct: int, total_budget: float) -> dict:
     """
     Applies the Priority Shield algorithm:
@@ -533,39 +562,31 @@ def apply_priority_shield(points: dict, drop_pct: int, total_budget: float) -> d
 # =============================================================================
 # VENDOR QUOTE PARSER
 # =============================================================================
+@st.cache_data
 def parse_vendor_quote(text: str, event_type: str) -> dict:
     """
     Regex-based vendor quote parser.
     Extracts line items, taxes, and flags potentially hidden/missing charges.
     """
-    # Match lines like: "Item Name - ₹12,000" or "Photography: $1500" or "Decor  25000"
-    item_pattern = re.compile(
-        r"^(.+?)\s*[-:]\s*[₹$₨Rs\.]?\s*([\d,]+(?:\.\d{1,2})?)",
-        re.MULTILINE | re.IGNORECASE,
-    )
-    gst_pattern = re.compile(
-        r"(?:GST|CGST|SGST|IGST|Service\s+(?:Charge|Tax)|VAT|Tax)[^\n]*",
-        re.IGNORECASE,
-    )
     items = []
     tax_lines = []
     total = 0.0
 
-    for match in item_pattern.finditer(text):
+    for match in ITEM_PATTERN.finditer(text):
         name = match.group(1).strip().rstrip("-:").strip()
         amt_str = match.group(2).replace(",", "")
         try:
             amt = float(amt_str)
         except ValueError:
             continue
-        is_tax = bool(re.search(r"GST|CGST|SGST|IGST|service\s+charge|VAT|tax", name, re.I))
-        is_total = bool(re.search(r"\btotal\b|\bgrand\s+total\b|\bnet\b", name, re.I))
+        is_tax = bool(TAX_PATTERN.search(name))
+        is_total = bool(TOTAL_PATTERN.search(name))
         items.append({"name": name, "amount": amt, "is_tax": is_tax, "is_total": is_total})
         if not is_total and not is_tax:
             total += amt
 
     # Standalone GST mentions without amounts
-    for m in gst_pattern.finditer(text):
+    for m in GST_PATTERN.finditer(text):
         line = m.group(0).strip()
         if not any(line in i["name"] for i in items):
             tax_lines.append(line)
@@ -610,10 +631,18 @@ def parse_vendor_quote(text: str, event_type: str) -> dict:
 # =============================================================================
 # PLOTLY HELPERS
 # =============================================================================
-def make_donut_chart(points: dict, total_budget: float) -> go.Figure:
-    labels = [CATEGORIES[k]["label"] for k in points]
-    amounts = [points_to_amount(v, total_budget) for v in points.values()]
-    colors = [CATEGORIES[k]["color"] for k in points]
+@st.cache_data
+def make_donut_chart(
+    points: dict,
+    total_budget: float,
+    categories: Optional[dict] = None,
+    currency: str = "INR",
+) -> go.Figure:
+    """Generate an interactive Plotly donut chart representing budget distribution."""
+    cats = categories if categories is not None else CATEGORIES
+    labels = [cats[k]["label"] for k in points if k in cats]
+    amounts = [points_to_amount(points[k], total_budget) for k in points if k in cats]
+    colors = [cats[k]["color"] for k in points if k in cats]
 
     fig = go.Figure(go.Pie(
         labels=labels,
@@ -632,35 +661,44 @@ def make_donut_chart(points: dict, total_budget: float) -> go.Figure:
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         annotations=[dict(
-            text=f"<b>{fmt_amount(total_budget)}</b>",
+            text=f"<b>{fmt_amount(total_budget, currency=currency)}</b>",
             x=0.5, y=0.5, font_size=14, showarrow=False,
         )],
     )
     return fig
 
 
-def make_comparison_bar(original_allocs: dict, new_allocs: dict,
-                        protected_cats: list) -> go.Figure:
-    labels  = [CATEGORIES[k]["label"] for k in CATEGORIES]
-    orig    = [original_allocs[k] for k in CATEGORIES]
-    revised = [new_allocs[k] for k in CATEGORIES]
-    bar_colors_orig    = [CATEGORIES[k]["color"] for k in CATEGORIES]
+@st.cache_data
+def make_comparison_bar(
+    original_allocs: dict,
+    new_allocs: dict,
+    protected_cats: list,
+    categories: Optional[dict] = None,
+    currency: str = "INR",
+) -> go.Figure:
+    """Generate a grouped bar chart comparing budget allocations before and after Priority Shield."""
+    cats = categories if categories is not None else CATEGORIES
+    active_keys = [k for k in cats if k in original_allocs and k in new_allocs]
+    labels  = [cats[k]["label"] for k in active_keys]
+    orig    = [original_allocs[k] for k in active_keys]
+    revised = [new_allocs[k] for k in active_keys]
+    bar_colors_orig    = [cats[k]["color"] for k in active_keys]
     bar_colors_revised = [
         "#10b981" if k in protected_cats and new_allocs[k] == original_allocs[k]
         else ("#9ca3af" if original_allocs[k] == 0 else "#f59e0b")
-        for k in CATEGORIES
+        for k in active_keys
     ]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
         name="Original Budget", x=labels, y=orig,
         marker_color=bar_colors_orig, opacity=0.55,
-        text=[fmt_amount(v) for v in orig], textposition="outside",
+        text=[fmt_amount(v, currency=currency) for v in orig], textposition="outside",
     ))
     fig.add_trace(go.Bar(
         name="After Shield", x=labels, y=revised,
         marker_color=bar_colors_revised,
-        text=[fmt_amount(v) for v in revised], textposition="outside",
+        text=[fmt_amount(v, currency=currency) for v in revised], textposition="outside",
     ))
     fig.update_layout(
         barmode="group",
@@ -678,7 +716,8 @@ def make_comparison_bar(original_allocs: dict, new_allocs: dict,
 # =============================================================================
 # SIDEBAR
 # =============================================================================
-def render_sidebar():
+def render_sidebar() -> None:
+    """Render the application sidebar with navigation, settings, and progress summary."""
     with st.sidebar:
         st.markdown("## 🎉 AI Event Planner")
         st.markdown("---")
@@ -745,11 +784,14 @@ def render_sidebar():
 
         # Status Overview
         st.markdown("### 📊 Status Overview")
+        step4_active = bool(st.session_state.get("vendor_parse_result")) or any(
+            st.session_state.get("task_done", {}).values()
+        )
         steps = [
             ("1", "Vibe Calibration", st.session_state.vibe_confirmed),
             ("2", "Budget Engine",    st.session_state.budget_locked),
             ("3", "What-If Shield",   st.session_state.shield_result is not None),
-            ("4", "Timeline & Vendor", True),
+            ("4", "Timeline & Vendor", step4_active),
         ]
         for num, label, done in steps:
             icon = "✅" if done else "⏳"
@@ -773,9 +815,10 @@ def render_sidebar():
 # =============================================================================
 # STEP 1 — VIBE CALIBRATION
 # =============================================================================
-def render_step1():
+def render_step1() -> None:
+    """Render Step 1: Vibe Calibration and aesthetic profile generation."""
     st.markdown("""
-    <div class="step-banner">
+    <div class="step-banner" role="region" aria-label="Step 1: Vibe Calibration">
         <h2>✨ Step 1 — Vibe Calibration</h2>
         <p>Define your event's aesthetic DNA and tell us what to absolutely avoid.</p>
     </div>
@@ -867,7 +910,7 @@ Keep it under 85 words. Be specific, poetic, and uplifting — not generic."""
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
         st.markdown("#### 🌟 Your AI Reality Preview")
         st.markdown(f"""
-        <div class="vibe-card">
+        <div class="vibe-card" role="region" aria-label="AI Reality Preview Profile">
             <h4>✨ Vibe Profile — {st.session_state.event_type}</h4>
             <p>{st.session_state.vibe_summary}</p>
         </div>
@@ -885,29 +928,28 @@ Keep it under 85 words. Be specific, poetic, and uplifting — not generic."""
                 st.session_state.vibe_confirmed = True
                 st.session_state.step = max(st.session_state.step, 2)
                 set_nav_page("2. Budget Engine & Pie Chart")
-                st.rerun()
 
     if st.session_state.vibe_confirmed:
         st.success("✅ Vibe locked! You can proceed to the Budget Engine.")
         if st.button("Go to Step 2: Budget Engine & Pie Chart →", type="secondary"):
             set_nav_page("2. Budget Engine & Pie Chart")
-            st.rerun()
 
 
 # =============================================================================
 # STEP 2 — 100-POINT PRIORITY BUDGET ENGINE
 # =============================================================================
-def render_step2():
+def render_step2() -> None:
+    """Render Step 2: 100-Point Priority Budget Engine and allocation breakdown."""
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
     st.markdown("""
-    <div class="step-banner">
+    <div class="step-banner" role="region" aria-label="Step 2: 100-Point Priority Budget Engine">
         <h2>💰 Step 2 — 100-Point Priority Budget Engine</h2>
-        <p>Allocate exactly 100 points across your 4 core event categories.</p>
+        <p>Allocate exactly 100 points across your core and custom event categories.</p>
     </div>
     """, unsafe_allow_html=True)
 
     sym = currency_symbol()
-    default_budget = 500000.0 if st.session_state.currency == "INR" else 5000.0
+    all_cats = get_all_categories()
 
     col_left, col_right = st.columns([1, 1], gap="large")
 
@@ -931,13 +973,47 @@ def render_step2():
         st.markdown("#### 🎯 Allocate Your 100 Points")
         st.caption("Higher points = higher budget priority = more protection during a crunch")
 
-        # Sliders
-        for cat_key, cat_info in CATEGORIES.items():
+        # Dynamic Custom Category Expander
+        if not st.session_state.budget_locked:
+            with st.expander("➕ Add / Manage Custom Categories", expanded=False):
+                col_cname, col_cbtn = st.columns([2.5, 1])
+                new_cat_name = col_cname.text_input(
+                    "Custom category name",
+                    placeholder="e.g., Return Gifts, Entertainment",
+                    key="new_cat_name_input",
+                )
+                if col_cbtn.button("Add Category") and new_cat_name.strip():
+                    clean_name = new_cat_name.strip()
+                    custom_key = "custom_" + re.sub(r"[^a-zA-Z0-9]+", "_", clean_name).strip("_").lower()
+                    if custom_key not in all_cats:
+                        palette = ["#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#06b6d4"]
+                        idx = len(st.session_state.custom_categories) % len(palette)
+                        st.session_state.custom_categories[custom_key] = {
+                            "label": f"✨ {clean_name}",
+                            "color": palette[idx],
+                            "desc": f"Custom category: {clean_name}",
+                        }
+                        st.session_state[f"points_{custom_key}"] = 0
+                        st.rerun()
+
+                if st.session_state.custom_categories:
+                    st.caption("Active custom categories:")
+                    for c_key in list(st.session_state.custom_categories.keys()):
+                        col_lbl, col_del = st.columns([3, 1])
+                        col_lbl.write(st.session_state.custom_categories[c_key]["label"])
+                        if col_del.button("🗑️ Remove", key=f"del_{c_key}"):
+                            del st.session_state.custom_categories[c_key]
+                            if f"points_{c_key}" in st.session_state:
+                                del st.session_state[f"points_{c_key}"]
+                            st.rerun()
+
+        # Sliders for all categories (default + custom)
+        for cat_key, cat_info in all_cats.items():
             pts_key = f"points_{cat_key}"
             val = st.slider(
                 cat_info["label"],
                 min_value=0, max_value=100, step=5,
-                value=st.session_state[pts_key],
+                value=int(st.session_state.get(pts_key, 0)),
                 disabled=st.session_state.budget_locked,
                 key=f"slider_{cat_key}",
             )
@@ -958,13 +1034,13 @@ def render_step2():
     with col_right:
         st.markdown("#### 📊 Budget Breakdown")
         pts = get_points_dict()
-        fig = make_donut_chart(pts, budget)
+        fig = make_donut_chart(pts, budget, categories=all_cats, currency=st.session_state.currency)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         # Per-category breakdown table
         st.markdown("#### 📋 Category Allocations")
-        for cat_key, cat_info in CATEGORIES.items():
-            pts_val = st.session_state[f"points_{cat_key}"]
+        for cat_key, cat_info in all_cats.items():
+            pts_val = int(st.session_state.get(f"points_{cat_key}", 0))
             amount  = points_to_amount(pts_val, budget)
             col_a, col_b, col_c = st.columns([2.5, 1, 1.5])
             col_a.markdown(cat_info["label"])
@@ -985,7 +1061,6 @@ def render_step2():
         with col_next:
             if st.button("Go to Step 3: Priority Shield Simulator →", type="primary"):
                 set_nav_page("3. Priority Shield Simulator")
-                st.rerun()
     else:
         if st.button(
             "🔒 Lock Budget & Continue →",
@@ -996,19 +1071,21 @@ def render_step2():
             st.session_state.budget_locked = True
             st.session_state.step = max(st.session_state.step, 3)
             set_nav_page("3. Priority Shield Simulator")
-            st.rerun()
 
 
 # =============================================================================
 # STEP 3 — WHAT-IF SIMULATOR & PRIORITY SHIELD
 # =============================================================================
-def render_step3():
+def render_step3() -> None:
+    """Render Step 3: What-If Budget Drop Simulator and Priority Shield protection."""
     st.markdown("""
-    <div class="step-banner">
+    <div class="step-banner" role="region" aria-label="Step 3: What-If Budget Drop Simulator">
         <h2>⚡ Step 3 — What-If Budget Drop Simulator</h2>
         <p>Simulate an unexpected budget cut. The Priority Shield protects your top priorities automatically.</p>
     </div>
     """, unsafe_allow_html=True)
+
+    all_cats = get_all_categories()
 
     # Optional Budget Drop Toggle
     has_budget_drop = st.checkbox(
@@ -1028,15 +1105,14 @@ def render_step3():
         st.markdown("#### 📋 Current Stable Allocations")
         pts = get_points_dict()
         allocs = {k: points_to_amount(v, st.session_state.total_budget) for k, v in pts.items()}
-        cols = st.columns(4)
-        for i, (k, info) in enumerate(CATEGORIES.items()):
+        cols = st.columns(len(all_cats))
+        for i, (k, info) in enumerate(all_cats.items()):
             with cols[i]:
-                st.metric(info["label"], fmt_amount(allocs[k]), f"{pts[k]} pts")
+                st.metric(info["label"], fmt_amount(allocs[k]), f"{pts.get(k, 0)} pts")
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Proceed to Step 4: Timeline & Quote Parser →", type="primary"):
             set_nav_page("4. Timeline & Quote Parser")
-            st.rerun()
         return
 
     col_ctrl, col_info = st.columns([1, 1], gap="large")
@@ -1082,10 +1158,10 @@ def render_step3():
             # Generate DIY cards for vulnerable categories that were actually funded
             diy_cards = {}
             for cat in result["vulnerable_cats"]:
-                orig = result["original_allocs"][cat]
-                new  = result["new_allocs"][cat]
+                orig = result["original_allocs"].get(cat, 0.0)
+                new  = result["new_allocs"].get(cat, 0.0)
                 if orig > 0 and new < orig:
-                    cat_label = CATEGORIES[cat]["label"]
+                    cat_label = all_cats.get(cat, {}).get("label", cat)
                     prompt = f"""The user's {cat_label} budget was cut from {fmt_amount(orig)} to {fmt_amount(new)} due to an unexpected budget drop ({drop_pct}% overall).
 Event type: {st.session_state.event_type}
 Style preferences: {", ".join(st.session_state.style_tags) if st.session_state.style_tags else "not specified"}
@@ -1114,10 +1190,10 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
         if st.session_state.shield_result:
             result = st.session_state.shield_result
             st.markdown("#### 🛡️ Shield Status")
-            for cat_key in CATEGORIES:
-                label = CATEGORIES[cat_key]["label"]
-                orig = result["original_allocs"][cat_key]
-                new  = result["new_allocs"][cat_key]
+            for cat_key in all_cats:
+                label = all_cats[cat_key]["label"]
+                orig = result["original_allocs"].get(cat_key, 0.0)
+                new  = result["new_allocs"].get(cat_key, 0.0)
                 diff = new - orig
                 diff_str = f" ({fmt_amount(diff)})" if diff < 0 else ""
 
@@ -1156,7 +1232,11 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
         st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
         st.markdown("#### 📊 Before vs After — Budget Comparison")
         fig = make_comparison_bar(
-            result["original_allocs"], result["new_allocs"], result["protected_cats"]
+            result["original_allocs"],
+            result["new_allocs"],
+            result["protected_cats"],
+            categories=all_cats,
+            currency=st.session_state.currency,
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1186,16 +1266,16 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Proceed to Step 4: Timeline & Quote Parser →", type="primary"):
             set_nav_page("4. Timeline & Quote Parser")
-            st.rerun()
 
 
 # =============================================================================
 # STEP 4A — SMART TIMELINE
 # =============================================================================
-def render_step4_timeline():
+def render_step4_timeline() -> None:
+    """Render Step 4A: Smart Event Timeline with dependency awareness."""
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
     st.markdown("""
-    <div class="step-banner">
+    <div class="step-banner" role="region" aria-label="Step 4A: Smart Event Timeline">
         <h2>📅 Step 4A — Smart Event Timeline</h2>
         <p>Track every task with dependency awareness and urgency-coloured status.</p>
     </div>
@@ -1315,10 +1395,11 @@ def render_step4_timeline():
 # =============================================================================
 # STEP 4B — VENDOR QUOTE PARSER
 # =============================================================================
-def render_step4_vendor():
+def render_step4_vendor() -> None:
+    """Render Step 4B: Vendor Quote Analyzer and line-item auditor."""
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
     st.markdown("""
-    <div class="step-banner">
+    <div class="step-banner" role="region" aria-label="Step 4B: Vendor Quote Analyzer">
         <h2>🔍 Step 4B — Vendor Quote Analyzer</h2>
         <p>Paste a messy vendor quote and we'll extract line items, taxes, and hidden cost warnings.</p>
     </div>
@@ -1400,7 +1481,7 @@ Be concise (each bullet under 25 words). Start each bullet with •."""
             st.markdown("#### 📊 Parsed Breakdown")
             items = result["items"]
             if items:
-                # Build HTML table
+                # Build HTML table with accessibility attributes
                 rows_html = ""
                 for item in items:
                     row_class = "tax-row" if item["is_tax"] else ("warn-row" if item["is_total"] else "")
@@ -1417,12 +1498,12 @@ Be concise (each bullet under 25 words). Start each bullet with •."""
                     </tr>"""
 
                 st.markdown(f"""
-                <table class="vendor-table">
+                <table class="vendor-table" role="table" aria-label="Vendor Quote Breakdown">
                     <thead>
                         <tr>
-                            <th>Item</th>
-                            <th style="text-align:right;">Amount</th>
-                            <th>Type</th>
+                            <th scope="col">Item</th>
+                            <th scope="col" style="text-align:right;">Amount</th>
+                            <th scope="col">Type</th>
                         </tr>
                     </thead>
                     <tbody>{rows_html}</tbody>
@@ -1461,7 +1542,8 @@ Be concise (each bullet under 25 words). Start each bullet with •."""
 # =============================================================================
 # MAIN ORCHESTRATOR
 # =============================================================================
-def main():
+def main() -> None:
+    """Main entry point orchestrating session state, sidebar navigation, and step routing."""
     init_session_state()
     render_sidebar()
 
