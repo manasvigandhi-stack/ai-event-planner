@@ -10,7 +10,7 @@ A fully functional, polished **Streamlit** web application that acts as your AI-
 | Step | Feature |
 |---|---|
 | **Step 1** | Vibe Calibration — event type, custom event types, style tags, Hard Nos, AI Reality Preview |
-| **Step 2** | 100-Point Budget Engine — interactive sliders, custom category support, live Plotly donut chart, validation |
+| **Step 2** | 100-Point Budget Engine — interactive sliders across 4 core categories, live Plotly donut chart, validation |
 | **Step 3** | What-If Budget Simulator — Priority Shield algorithm with 30% safety floor + DIY AI cards |
 | **Step 4A** | Smart Timeline — date-aware task checklist with urgency tracking and reactive progress |
 | **Step 4B** | Vendor Quote Analyzer — regex parser, tax breakdown table + Gemini AI commentary |
@@ -76,13 +76,12 @@ ai-event-planner/
 ## 🛡️ Priority Shield Algorithm
 
 When a budget drop is simulated:
-1. Categories are **ranked by point allocation** (highest → lowest).
-2. **Top 2 highest-priority categories** = 🛡️ **PROTECTED** — original allocations remain untouched.
-3. Categories with **0 points / ₹0 allocations** are **automatically excluded** from absorbing cuts.
-4. The deficit is **proportionally distributed** across all active compressible categories.
-5. **30% Safety Floor**: Ensures no compressible category drops below 30% of its initial budget allocation (capping compression at 70%).
-6. If the deficit cannot be fully absorbed within the safety floor, an unabsorbed deficit banner is displayed with strategic advice.
-7. **AI Recommendation Cards** suggest tailored DIY and local-vendor alternatives for compressed categories matching the event's vibe and Hard Nos.
+1. The 4 core categories are **ranked by point allocation** (highest → lowest)
+2. **Top 2 highest** = 🛡️ PROTECTED — budget untouched
+3. **Bottom 2** = ⚡ COMPRESSED — absorb deficit proportionally down to a 30% safety floor
+4. Categories with **0 points / ₹0 allocations** are **automatically excluded** from absorbing cuts
+5. **AI Recommendation Cards** suggest DIY/local alternatives for compressed categories
+6. Remaining deficit is flagged if lower-priority cuts reach the 30% safety floor
 
 ---
 

@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
-# =============================================================================
-# AI EVENT PLANNER — Build with AI Challenge 5 (Google for Developers)
-# =============================================================================
-# A Streamlit application that guides users through 4 interactive steps to
-# plan their perfect event using Google Gemini AI.
-#
-# Steps:
-#   1. Vibe Calibration & Negative Constraints
-#   2. 100-Point Priority Budget Engine
-#   3. What-If Budget Drop Simulator & Priority Shield
-#   4. Smart Timeline & Vendor Quote Parser
-# =============================================================================
+"""
+AI EVENT PLANNER — Build with AI Challenge 5 (Google for Developers)
 
+A Streamlit application that guides users through 4 interactive steps to
+plan their perfect event using Google Gemini AI.
+
+Steps:
+    1. Vibe Calibration & Negative Constraints
+    2. 100-Point Priority Budget Engine
+    3. What-If Budget Drop Simulator & Priority Shield
+    4. Smart Timeline & Vendor Quote Parser
+"""
+
+import html
+import logging
 import os
 import re
 from datetime import date, timedelta
@@ -134,7 +136,7 @@ html, body, [class*="css"] {
 .task-overdue   { color: #dc2626; font-weight: 600; }
 .task-urgent    { color: #d97706; font-weight: 500; }
 .task-ontrack   { color: #059669; }
-.task-done      { color: #9ca3af; text-decoration: line-through; }
+.task-done      { color: #4b5563; text-decoration: line-through; }
 
 /* ── Metric cards ── */
 [data-testid="metric-container"] {
@@ -296,6 +298,25 @@ DIY_TEMPLATES = {
     ],
 }
 
+# Sample quote for demo
+SAMPLE_VENDOR_QUOTE = """WEDDING CATERING QUOTE — Saffron Hospitality
+Date: 15 March 2025 | Guests: 300
+
+Buffet Catering (Veg + Non-Veg): 150,000
+Welcome Drinks & Mocktails: 18,000
+Live Counters (3 nos): 24,000
+Dessert Station: 12,000
+Service Staff (15 pax): 22,500
+Cutlery & Crockery Rental: 8,000
+CGST @ 9%: 21,105
+SGST @ 9%: 21,105
+
+Subtotal (before tax): 234,500
+Total: 276,710
+
+Note: Above quote does not include generator rental, post-event cleanup, or overtime beyond 11 PM.
+"""
+
 
 # =============================================================================
 # SESSION STATE INITIALIZATION
@@ -323,7 +344,6 @@ def init_session_state() -> None:
         "points_photo": 25,
         "points_venue": 25,
         "points_deco": 15,
-        "custom_categories": {},
         "budget_locked": False,
 
         # Step 3 — What-If Simulator
@@ -376,18 +396,20 @@ def get_gemini_model() -> Any:
         return None
     try:
         return get_cached_gemini_model(key)
-    except Exception:
+    except Exception as exc:
+        logging.debug("Fallback triggered: %s", exc)
         return None
 
 
 def gemini_generate_rest(prompt: str, api_key: str) -> str:
     """Call Gemini REST API directly using standard requests library."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.7, "maxOutputTokens": 300},
     }
-    resp = requests.post(url, json=payload, timeout=12)
+    resp = requests.post(url, headers=headers, json=payload, timeout=12)
     resp.raise_for_status()
     data = resp.json()
     return data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -412,13 +434,14 @@ def gemini_generate(prompt: str, fallback: str) -> str:
                 response = model.generate_content(prompt)
                 if response and hasattr(response, "text") and response.text:
                     return response.text.strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.debug("Fallback triggered: %s", exc)
 
     # Try direct REST API fallback
     try:
         return gemini_generate_rest(prompt, key)
-    except Exception:
+    except Exception as exc:
+        logging.debug("Fallback triggered: %s", exc)
         return fallback
 
 
@@ -460,18 +483,9 @@ def points_to_amount(points: int, total: float) -> float:
     return (points / 100) * total
 
 
-def get_all_categories() -> Dict[str, Dict[str, str]]:
-    """Return merged dictionary of default and custom user-defined categories."""
-    merged = dict(CATEGORIES)
-    if "custom_categories" in st.session_state and isinstance(st.session_state.custom_categories, dict):
-        merged.update(st.session_state.custom_categories)
-    return merged
-
-
 def get_points_dict() -> Dict[str, int]:
-    """Return dictionary mapping all category keys to their assigned points."""
-    all_cats = get_all_categories()
-    return {k: int(st.session_state.get(f"points_{k}", 0)) for k in all_cats}
+    """Return dictionary mapping core category keys to their assigned points."""
+    return {k: int(st.session_state.get(f"points_{k}", 0)) for k in CATEGORIES}
 
 
 def total_points() -> int:
@@ -635,14 +649,12 @@ def parse_vendor_quote(text: str, event_type: str) -> dict:
 def make_donut_chart(
     points: dict,
     total_budget: float,
-    categories: Optional[dict] = None,
     currency: str = "INR",
 ) -> go.Figure:
     """Generate an interactive Plotly donut chart representing budget distribution."""
-    cats = categories if categories is not None else CATEGORIES
-    labels = [cats[k]["label"] for k in points if k in cats]
-    amounts = [points_to_amount(points[k], total_budget) for k in points if k in cats]
-    colors = [cats[k]["color"] for k in points if k in cats]
+    labels = [CATEGORIES[k]["label"] for k in points if k in CATEGORIES]
+    amounts = [points_to_amount(points[k], total_budget) for k in points if k in CATEGORIES]
+    colors = [CATEGORIES[k]["color"] for k in points if k in CATEGORIES]
 
     fig = go.Figure(go.Pie(
         labels=labels,
@@ -672,20 +684,18 @@ def make_donut_chart(
 def make_comparison_bar(
     original_allocs: dict,
     new_allocs: dict,
-    protected_cats: list,
-    categories: Optional[dict] = None,
+    protected_cats: List[str],
     currency: str = "INR",
 ) -> go.Figure:
     """Generate a grouped bar chart comparing budget allocations before and after Priority Shield."""
-    cats = categories if categories is not None else CATEGORIES
-    active_keys = [k for k in cats if k in original_allocs and k in new_allocs]
-    labels  = [cats[k]["label"] for k in active_keys]
+    active_keys = [k for k in CATEGORIES if k in original_allocs and k in new_allocs]
+    labels  = [CATEGORIES[k]["label"] for k in active_keys]
     orig    = [original_allocs[k] for k in active_keys]
     revised = [new_allocs[k] for k in active_keys]
-    bar_colors_orig    = [cats[k]["color"] for k in active_keys]
+    bar_colors_orig    = [CATEGORIES[k]["color"] for k in active_keys]
     bar_colors_revised = [
         "#10b981" if k in protected_cats and new_allocs[k] == original_allocs[k]
-        else ("#9ca3af" if original_allocs[k] == 0 else "#f59e0b")
+        else ("#4b5563" if original_allocs[k] == 0 else "#f59e0b")
         for k in active_keys
     ]
 
@@ -911,8 +921,8 @@ Keep it under 85 words. Be specific, poetic, and uplifting — not generic."""
         st.markdown("#### 🌟 Your AI Reality Preview")
         st.markdown(f"""
         <div class="vibe-card" role="region" aria-label="AI Reality Preview Profile">
-            <h4>✨ Vibe Profile — {st.session_state.event_type}</h4>
-            <p>{st.session_state.vibe_summary}</p>
+            <h4>✨ Vibe Profile — {html.escape(str(st.session_state.event_type))}</h4>
+            <p>{html.escape(str(st.session_state.vibe_summary))}</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -944,12 +954,11 @@ def render_step2() -> None:
     st.markdown("""
     <div class="step-banner" role="region" aria-label="Step 2: 100-Point Priority Budget Engine">
         <h2>💰 Step 2 — 100-Point Priority Budget Engine</h2>
-        <p>Allocate exactly 100 points across your core and custom event categories.</p>
+        <p>Allocate exactly 100 points across your 4 core event categories.</p>
     </div>
     """, unsafe_allow_html=True)
 
     sym = currency_symbol()
-    all_cats = get_all_categories()
 
     col_left, col_right = st.columns([1, 1], gap="large")
 
@@ -973,42 +982,8 @@ def render_step2() -> None:
         st.markdown("#### 🎯 Allocate Your 100 Points")
         st.caption("Higher points = higher budget priority = more protection during a crunch")
 
-        # Dynamic Custom Category Expander
-        if not st.session_state.budget_locked:
-            with st.expander("➕ Add / Manage Custom Categories", expanded=False):
-                col_cname, col_cbtn = st.columns([2.5, 1])
-                new_cat_name = col_cname.text_input(
-                    "Custom category name",
-                    placeholder="e.g., Return Gifts, Entertainment",
-                    key="new_cat_name_input",
-                )
-                if col_cbtn.button("Add Category") and new_cat_name.strip():
-                    clean_name = new_cat_name.strip()
-                    custom_key = "custom_" + re.sub(r"[^a-zA-Z0-9]+", "_", clean_name).strip("_").lower()
-                    if custom_key not in all_cats:
-                        palette = ["#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#06b6d4"]
-                        idx = len(st.session_state.custom_categories) % len(palette)
-                        st.session_state.custom_categories[custom_key] = {
-                            "label": f"✨ {clean_name}",
-                            "color": palette[idx],
-                            "desc": f"Custom category: {clean_name}",
-                        }
-                        st.session_state[f"points_{custom_key}"] = 0
-                        st.rerun()
-
-                if st.session_state.custom_categories:
-                    st.caption("Active custom categories:")
-                    for c_key in list(st.session_state.custom_categories.keys()):
-                        col_lbl, col_del = st.columns([3, 1])
-                        col_lbl.write(st.session_state.custom_categories[c_key]["label"])
-                        if col_del.button("🗑️ Remove", key=f"del_{c_key}"):
-                            del st.session_state.custom_categories[c_key]
-                            if f"points_{c_key}" in st.session_state:
-                                del st.session_state[f"points_{c_key}"]
-                            st.rerun()
-
-        # Sliders for all categories (default + custom)
-        for cat_key, cat_info in all_cats.items():
+        # Sliders for 4 core categories
+        for cat_key, cat_info in CATEGORIES.items():
             pts_key = f"points_{cat_key}"
             val = st.slider(
                 cat_info["label"],
@@ -1034,12 +1009,12 @@ def render_step2() -> None:
     with col_right:
         st.markdown("#### 📊 Budget Breakdown")
         pts = get_points_dict()
-        fig = make_donut_chart(pts, budget, categories=all_cats, currency=st.session_state.currency)
+        fig = make_donut_chart(pts, budget, currency=st.session_state.currency)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         # Per-category breakdown table
         st.markdown("#### 📋 Category Allocations")
-        for cat_key, cat_info in all_cats.items():
+        for cat_key, cat_info in CATEGORIES.items():
             pts_val = int(st.session_state.get(f"points_{cat_key}", 0))
             amount  = points_to_amount(pts_val, budget)
             col_a, col_b, col_c = st.columns([2.5, 1, 1.5])
@@ -1073,6 +1048,32 @@ def render_step2() -> None:
             set_nav_page("3. Priority Shield Simulator")
 
 
+def _render_diy_cards() -> None:
+    """Render AI-powered DIY recommendation cards for compressed categories."""
+    if not st.session_state.diy_cards:
+        return
+    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+    st.markdown("#### 💡 AI-Powered DIY Recommendation Cards")
+    st.caption("Smart alternatives for your compressed categories — tailored to your vibe & Hard Nos")
+    cols = st.columns(len(st.session_state.diy_cards))
+    for i, (cat_key, card_data) in enumerate(st.session_state.diy_cards.items()):
+        with cols[i]:
+            saving = card_data["original"] - card_data["new"]
+            st.markdown(f"""
+            <div class="diy-card">
+                <h5>💡 {card_data["label"]}</h5>
+                <p style="font-size:0.83rem;color:#4b5563;margin-bottom:0.5rem;">
+                    Saving ~{fmt_amount(saving)} | Budget: {fmt_amount(card_data["new"])}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            tips_text = card_data["tips"]
+            for line in tips_text.split("\n"):
+                clean_line = line.strip().lstrip("•-*").strip()
+                if clean_line:
+                    st.markdown(f"• {clean_line}")
+
+
 # =============================================================================
 # STEP 3 — WHAT-IF SIMULATOR & PRIORITY SHIELD
 # =============================================================================
@@ -1084,8 +1085,6 @@ def render_step3() -> None:
         <p>Simulate an unexpected budget cut. The Priority Shield protects your top priorities automatically.</p>
     </div>
     """, unsafe_allow_html=True)
-
-    all_cats = get_all_categories()
 
     # Optional Budget Drop Toggle
     has_budget_drop = st.checkbox(
@@ -1105,8 +1104,8 @@ def render_step3() -> None:
         st.markdown("#### 📋 Current Stable Allocations")
         pts = get_points_dict()
         allocs = {k: points_to_amount(v, st.session_state.total_budget) for k, v in pts.items()}
-        cols = st.columns(len(all_cats))
-        for i, (k, info) in enumerate(all_cats.items()):
+        cols = st.columns(4)
+        for i, (k, info) in enumerate(CATEGORIES.items()):
             with cols[i]:
                 st.metric(info["label"], fmt_amount(allocs[k]), f"{pts.get(k, 0)} pts")
 
@@ -1161,7 +1160,7 @@ def render_step3() -> None:
                 orig = result["original_allocs"].get(cat, 0.0)
                 new  = result["new_allocs"].get(cat, 0.0)
                 if orig > 0 and new < orig:
-                    cat_label = all_cats.get(cat, {}).get("label", cat)
+                    cat_label = CATEGORIES[cat]["label"]
                     prompt = f"""The user's {cat_label} budget was cut from {fmt_amount(orig)} to {fmt_amount(new)} due to an unexpected budget drop ({drop_pct}% overall).
 Event type: {st.session_state.event_type}
 Style preferences: {", ".join(st.session_state.style_tags) if st.session_state.style_tags else "not specified"}
@@ -1190,15 +1189,15 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
         if st.session_state.shield_result:
             result = st.session_state.shield_result
             st.markdown("#### 🛡️ Shield Status")
-            for cat_key in all_cats:
-                label = all_cats[cat_key]["label"]
+            for cat_key in CATEGORIES:
+                label = CATEGORIES[cat_key]["label"]
                 orig = result["original_allocs"].get(cat_key, 0.0)
                 new  = result["new_allocs"].get(cat_key, 0.0)
                 diff = new - orig
                 diff_str = f" ({fmt_amount(diff)})" if diff < 0 else ""
 
                 if orig == 0:
-                    badge = '<span style="background:#9ca3af;color:white;border-radius:6px;padding:2px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">⚪ EXCLUDED (0 PTS)</span>'
+                    badge = '<span style="background:#4b5563;color:white;border-radius:6px;padding:2px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">⚪ EXCLUDED (0 PTS)</span>'
                 elif cat_key in result["protected_cats"] and diff == 0:
                     badge = '<span class="badge-shield">🛡️ PROTECTED</span>'
                 else:
@@ -1220,7 +1219,7 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
                 )
         else:
             st.markdown("""
-            <div style="padding:2rem;text-align:center;color:#9ca3af;">
+            <div style="padding:2rem;text-align:center;color:#4b5563;">
                 <div style="font-size:3rem;">⚡</div>
                 <p>Run the simulation to see the Priority Shield in action.</p>
             </div>
@@ -1235,33 +1234,10 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
             result["original_allocs"],
             result["new_allocs"],
             result["protected_cats"],
-            categories=all_cats,
             currency=st.session_state.currency,
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        if st.session_state.diy_cards:
-            st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
-            st.markdown("#### 💡 AI-Powered DIY Recommendation Cards")
-            st.caption("Smart alternatives for your compressed categories — tailored to your vibe & Hard Nos")
-            cols = st.columns(len(st.session_state.diy_cards))
-            for i, (cat_key, card_data) in enumerate(st.session_state.diy_cards.items()):
-                with cols[i]:
-                    saving = card_data["original"] - card_data["new"]
-                    st.markdown(f"""
-                    <div class="diy-card">
-                        <h5>💡 {card_data["label"]}</h5>
-                        <p style="font-size:0.83rem;color:#6b7280;margin-bottom:0.5rem;">
-                            Saving ~{fmt_amount(saving)} | Budget: {fmt_amount(card_data["new"])}
-                        </p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    tips_text = card_data["tips"]
-                    # Render bullet points
-                    for line in tips_text.split("\n"):
-                        line = line.strip().lstrip("•-*").strip()
-                        if line:
-                            st.markdown(f"• {line}")
+        _render_diy_cards()
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Proceed to Step 4: Timeline & Quote Parser →", type="primary"):
@@ -1271,6 +1247,74 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
 # =============================================================================
 # STEP 4A — SMART TIMELINE
 # =============================================================================
+def _render_task_row(idx: int, task_info: Dict[str, Any], event_date: date) -> None:
+    """Render a single event task row with status, due date, and dependency indicator."""
+    days_before = task_info["days_before"]
+    task_name   = task_info["task"]
+    category    = task_info["category"]
+    depends_on  = task_info["depends_on"]
+    task_date   = event_date - timedelta(days=days_before)
+    days_until  = (task_date - date.today()).days
+
+    # Check widget state directly for instantaneous reactivity
+    is_done = bool(st.session_state.get(f"task_{idx}", False))
+
+    # Urgency classification
+    if is_done:
+        urgency_label = "✅"
+        urgency_class = "task-done"
+    elif days_until < 0:
+        urgency_label = "🔴 OVERDUE"
+        urgency_class = "task-overdue"
+    elif days_until <= 14:
+        urgency_label = "🟠 DUE SOON"
+        urgency_class = "task-urgent"
+    else:
+        urgency_label = "🟢 On Track"
+        urgency_class = "task-ontrack"
+
+    col_check, col_detail, col_date_col, col_status = st.columns([0.4, 3, 1.5, 1.5])
+
+    with col_check:
+        checked = st.checkbox(
+            f"Mark {task_name} completed",
+            key=f"task_{idx}",
+            label_visibility="collapsed",
+        )
+        st.session_state.task_done[idx] = checked
+
+    with col_detail:
+        dep_str = ""
+        if depends_on:
+            escaped_dep = html.escape(str(", ".join(depends_on[:1])))
+            dep_str = f" <span style='color:#4b5563;font-size:0.8rem;'>→ after: {escaped_dep}</span>"
+        escaped_task = html.escape(str(task_name))
+        escaped_cat = html.escape(str(category))
+        st.markdown(
+            f"<span class='{urgency_class}'>{escaped_task}</span>"
+            f" <span style='background:#f3f4f6;border-radius:4px;padding:1px 6px;"
+            f"font-size:0.78rem;color:#4b5563;'>{escaped_cat}</span>"
+            f"{dep_str}",
+            unsafe_allow_html=True,
+        )
+
+    with col_date_col:
+        if days_before == 0:
+            st.markdown("**📌 Event Day**")
+        else:
+            st.markdown(
+                f"<span style='font-size:0.87rem;color:#4b5563;'>"
+                f"{task_date.strftime('%d %b %Y')}</span>",
+                unsafe_allow_html=True,
+            )
+
+    with col_status:
+        st.markdown(
+            f"<span style='font-size:0.83rem;'>{urgency_label}</span>",
+            unsafe_allow_html=True,
+        )
+
+
 def render_step4_timeline() -> None:
     """Render Step 4A: Smart Event Timeline with dependency awareness."""
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
@@ -1327,74 +1371,77 @@ def render_step4_timeline() -> None:
     st.markdown("#### ✅ Task Checklist")
     st.caption("Tasks are sorted chronologically. Dependencies are shown with → arrows.")
 
-    # Group by category for cleaner display
+    # Render individual task rows
     for idx, task_info in enumerate(tasks):
-        days_before = task_info["days_before"]
-        task_name   = task_info["task"]
-        category    = task_info["category"]
-        depends_on  = task_info["depends_on"]
-        task_date   = event_date - timedelta(days=days_before)
-        days_until  = (task_date - date.today()).days
-
-        # Check widget state directly for instantaneous reactivity
-        is_done = bool(st.session_state.get(f"task_{idx}", False))
-
-        # Urgency classification
-        if is_done:
-            urgency_label = "✅"
-            urgency_class = "task-done"
-        elif days_until < 0:
-            urgency_label = "🔴 OVERDUE"
-            urgency_class = "task-overdue"
-        elif days_until <= 14:
-            urgency_label = "🟠 DUE SOON"
-            urgency_class = "task-urgent"
-        else:
-            urgency_label = "🟢 On Track"
-            urgency_class = "task-ontrack"
-
-        col_check, col_detail, col_date_col, col_status = st.columns([0.4, 3, 1.5, 1.5])
-
-        with col_check:
-            checked = st.checkbox(
-                "done",
-                key=f"task_{idx}",
-                label_visibility="collapsed",
-            )
-            st.session_state.task_done[idx] = checked
-
-        with col_detail:
-            dep_str = ""
-            if depends_on:
-                dep_str = f" <span style='color:#9ca3af;font-size:0.8rem;'>→ after: {', '.join(depends_on[:1])}</span>"
-            st.markdown(
-                f"<span class='{urgency_class}'>{task_name}</span>"
-                f" <span style='background:#f3f4f6;border-radius:4px;padding:1px 6px;"
-                f"font-size:0.78rem;color:#6b7280;'>{category}</span>"
-                f"{dep_str}",
-                unsafe_allow_html=True,
-            )
-
-        with col_date_col:
-            if days_before == 0:
-                st.markdown("**📌 Event Day**")
-            else:
-                st.markdown(
-                    f"<span style='font-size:0.87rem;color:#6b7280;'>"
-                    f"{task_date.strftime('%d %b %Y')}</span>",
-                    unsafe_allow_html=True,
-                )
-
-        with col_status:
-            st.markdown(
-                f"<span style='font-size:0.83rem;'>{urgency_label}</span>",
-                unsafe_allow_html=True,
-            )
+        _render_task_row(idx, task_info, event_date)
 
 
 # =============================================================================
 # STEP 4B — VENDOR QUOTE PARSER
 # =============================================================================
+def _render_quote_results(result: Dict[str, Any]) -> None:
+    """Render structured vendor quote analysis results, line items table, and warnings."""
+    st.markdown("#### 📊 Parsed Breakdown")
+    items = result["items"]
+    if items:
+        # Build HTML table with accessibility attributes
+        rows_html = ""
+        for item in items:
+            row_class = "tax-row" if item["is_tax"] else ("warn-row" if item["is_total"] else "")
+            tag = ""
+            if item["is_tax"]:
+                tag = "🧾 Tax"
+            elif item["is_total"]:
+                tag = "📌 Total"
+            rows_html += f"""
+            <tr class="{row_class}">
+                <td>{html.escape(str(item['name']))}</td>
+                <td style="text-align:right;">{fmt_amount(item['amount'])}</td>
+                <td style="font-size:0.82rem;color:#4b5563;">{tag}</td>
+            </tr>"""
+
+        st.markdown(f"""
+        <table class="vendor-table" role="table" aria-label="Vendor Quote Breakdown">
+            <thead>
+                <tr>
+                    <th scope="col">Item</th>
+                    <th scope="col" style="text-align:right;">Amount</th>
+                    <th scope="col">Type</th>
+                </tr>
+            </thead>
+            <tbody>{rows_html}</tbody>
+        </table>
+        """, unsafe_allow_html=True)
+        st.markdown("")
+        st.metric("Estimated Subtotal (excl. taxes)", fmt_amount(result["subtotal"]))
+    else:
+        st.info("No structured line items detected. Try a cleaner format (e.g., `Item Name: ₹12,000`).")
+
+    # Missing items
+    if result["missing_items"]:
+        st.markdown("---")
+        st.markdown("#### ⚠️ Possibly Missing Items")
+        st.caption(f"Expected for a {html.escape(str(st.session_state.event_type))} but not found in this quote:")
+        for m in result["missing_items"]:
+            st.markdown(f"• **{m}** — not mentioned in the quote")
+
+    # Hidden charge flags
+    if result["hidden_flags"]:
+        st.markdown("---")
+        st.markdown("#### 🔍 Hidden Cost Watchlist")
+        for flag in result["hidden_flags"]:
+            st.markdown(flag)
+
+    # AI commentary
+    if result.get("ai_commentary"):
+        st.markdown("---")
+        st.markdown("#### 🤖 AI Advisor Notes")
+        for line in result["ai_commentary"].split("\n"):
+            clean_line = line.strip().lstrip("•-*").strip()
+            if clean_line:
+                st.markdown(f"• {clean_line}")
+
+
 def render_step4_vendor() -> None:
     """Render Step 4B: Vendor Quote Analyzer and line-item auditor."""
     st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
@@ -1405,31 +1452,12 @@ def render_step4_vendor() -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    # Sample quote for demo
-    sample_quote = """WEDDING CATERING QUOTE — Saffron Hospitality
-Date: 15 March 2025 | Guests: 300
-
-Buffet Catering (Veg + Non-Veg): 150,000
-Welcome Drinks & Mocktails: 18,000
-Live Counters (3 nos): 24,000
-Dessert Station: 12,000
-Service Staff (15 pax): 22,500
-Cutlery & Crockery Rental: 8,000
-CGST @ 9%: 21,105
-SGST @ 9%: 21,105
-
-Subtotal (before tax): 234,500
-Total: 276,710
-
-Note: Above quote does not include generator rental, post-event cleanup, or overtime beyond 11 PM.
-"""
-
     col_input, col_output = st.columns([1, 1.2], gap="large")
 
     with col_input:
         st.markdown("#### 📄 Paste Your Vendor Quote")
         if st.button("📋 Load Sample Quote", help="Loads a demo quote so you can try the analyzer"):
-            st.session_state.vendor_quote_text = sample_quote
+            st.session_state.vendor_quote_text = SAMPLE_VENDOR_QUOTE
             st.session_state.vendor_parse_result = None
             st.rerun()
 
@@ -1472,71 +1500,13 @@ Be concise (each bullet under 25 words). Start each bullet with •."""
         result = st.session_state.vendor_parse_result
         if result is None:
             st.markdown("""
-            <div style="padding:3rem;text-align:center;color:#9ca3af;">
+            <div style="padding:3rem;text-align:center;color:#4b5563;">
                 <div style="font-size:3rem;">📋</div>
                 <p>Paste a quote on the left and click Analyze.</p>
             </div>
             """, unsafe_allow_html=True)
         else:
-            st.markdown("#### 📊 Parsed Breakdown")
-            items = result["items"]
-            if items:
-                # Build HTML table with accessibility attributes
-                rows_html = ""
-                for item in items:
-                    row_class = "tax-row" if item["is_tax"] else ("warn-row" if item["is_total"] else "")
-                    tag = ""
-                    if item["is_tax"]:
-                        tag = "🧾 Tax"
-                    elif item["is_total"]:
-                        tag = "📌 Total"
-                    rows_html += f"""
-                    <tr class="{row_class}">
-                        <td>{item['name']}</td>
-                        <td style="text-align:right;">{fmt_amount(item['amount'])}</td>
-                        <td style="font-size:0.82rem;color:#6b7280;">{tag}</td>
-                    </tr>"""
-
-                st.markdown(f"""
-                <table class="vendor-table" role="table" aria-label="Vendor Quote Breakdown">
-                    <thead>
-                        <tr>
-                            <th scope="col">Item</th>
-                            <th scope="col" style="text-align:right;">Amount</th>
-                            <th scope="col">Type</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-                """, unsafe_allow_html=True)
-                st.markdown("")
-                st.metric("Estimated Subtotal (excl. taxes)", fmt_amount(result["subtotal"]))
-            else:
-                st.info("No structured line items detected. Try a cleaner format (e.g., `Item Name: ₹12,000`).")
-
-            # Missing items
-            if result["missing_items"]:
-                st.markdown("---")
-                st.markdown("#### ⚠️ Possibly Missing Items")
-                st.caption(f"Expected for a {st.session_state.event_type} but not found in this quote:")
-                for m in result["missing_items"]:
-                    st.markdown(f"• **{m}** — not mentioned in the quote")
-
-            # Hidden charge flags
-            if result["hidden_flags"]:
-                st.markdown("---")
-                st.markdown("#### 🔍 Hidden Cost Watchlist")
-                for flag in result["hidden_flags"]:
-                    st.markdown(flag)
-
-            # AI commentary
-            if result.get("ai_commentary"):
-                st.markdown("---")
-                st.markdown("#### 🤖 AI Advisor Notes")
-                for line in result["ai_commentary"].split("\n"):
-                    line = line.strip().lstrip("•-*").strip()
-                    if line:
-                        st.markdown(f"• {line}")
+            _render_quote_results(result)
 
 
 # =============================================================================
@@ -1578,7 +1548,7 @@ def main() -> None:
     # Footer
     st.markdown("<br><hr>", unsafe_allow_html=True)
     st.markdown(
-        "<div style='text-align:center;color:#9ca3af;font-size:0.82rem;padding:0.5rem;'>"
+        "<div style='text-align:center;color:#4b5563;font-size:0.82rem;padding:0.5rem;'>"
         "🎉 AI Event Planner · Built for <b>Google for Developers Build with AI Challenge 5</b> · "
         "Powered by <b>Streamlit</b> + <b>Google Gemini</b>"
         "</div>",
