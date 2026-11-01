@@ -335,6 +335,7 @@ def set_nav_page(page_name: str):
     """Helper to update navigation selection across both state keys."""
     st.session_state["nav_page"] = page_name
     st.session_state["nav_selection"] = page_name
+    st.rerun()
 
 
 # =============================================================================
@@ -692,9 +693,9 @@ def render_sidebar():
             "Navigate",
             nav_options,
             index=default_idx,
-            key="nav_selection",
         )
         st.session_state.nav_page = selected_page
+        st.session_state.nav_selection = selected_page
 
         st.markdown("---")
 
