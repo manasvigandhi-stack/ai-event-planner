@@ -555,7 +555,7 @@ def parse_vendor_quote(text: str, event_type: str) -> dict:
         is_tax = bool(re.search(r"GST|CGST|SGST|IGST|service\s+charge|VAT|tax", name, re.I))
         is_total = bool(re.search(r"\btotal\b|\bgrand\s+total\b|\bnet\b", name, re.I))
         items.append({"name": name, "amount": amt, "is_tax": is_tax, "is_total": is_total})
-        if not is_total:
+        if not is_total and not is_tax:
             total += amt
 
     # Standalone GST mentions without amounts
