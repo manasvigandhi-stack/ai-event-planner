@@ -90,7 +90,7 @@ def test_all_categories_present():
 def test_priority_shield_protection_and_cut():
     """
     Verify top priority categories remain protected, while lower categories
-    absorb the budget deficit.
+    absorb the budget deficit proportionally without zeroing out.
     """
     total_budget = 100000.0
     drop_pct = 20  # 20% cut -> deficit = 20,000
@@ -107,9 +107,34 @@ def test_priority_shield_protection_and_cut():
     assert "photo" in result["protected_cats"] or "venue" in result["protected_cats"]
     assert result["new_allocs"]["food"] == 35000.0  # 100% protected
 
-    # Low priority compressed
-    assert result["new_allocs"]["deco"] < result["original_allocs"]["deco"]
+    # Compressible categories absorb proportionally
+    assert result["new_allocs"]["deco"] == 7500.0  # Cut by 7,500 (proportional 15/40)
+    assert result["new_allocs"]["venue"] == 12500.0  # Cut by 12,500 (proportional 25/40)
+    
+    # 30% safety floor strictly maintained
+    assert result["new_allocs"]["deco"] >= 0.30 * result["original_allocs"]["deco"]
+    assert result["new_allocs"]["venue"] >= 0.30 * result["original_allocs"]["venue"]
     assert result["remaining_deficit"] == 0.0
+
+
+def test_priority_shield_safety_floor_limit():
+    """
+    Verify safety floor rule: when deficit exceeds compressible capacity,
+    categories drop no lower than 30% of their original allocation and remaining deficit is flagged.
+    """
+    total_budget = 100000.0
+    drop_pct = 20  # deficit = 20,000
+    # Compressible categories have only 5 + 5 = 10 points (₹10,000)
+    points = {"food": 45, "photo": 45, "venue": 5, "deco": 5}
+
+    result = apply_priority_shield(points, drop_pct, total_budget)
+
+    # Each compressible category must retain exactly 30% safety floor
+    assert result["new_allocs"]["venue"] == 1500.0  # 30% of 5,000
+    assert result["new_allocs"]["deco"] == 1500.0   # 30% of 5,000
+
+    # Max cut was 3,500 + 3,500 = 7,000. Remaining unabsorbed deficit = 13,000
+    assert result["remaining_deficit"] == 13000.0
 
 
 def test_priority_shield_excludes_zero_point_categories():
@@ -182,3 +207,4 @@ def test_parse_vendor_quote_hidden_flags():
     assert len(parsed["hidden_flags"]) > 0
     flags_text = " ".join(parsed["hidden_flags"]).lower()
     assert "overtime" in flags_text or "cleanup" in flags_text
+

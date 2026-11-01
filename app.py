@@ -458,13 +458,15 @@ def apply_priority_shield(points: dict, drop_pct: int, total_budget: float) -> d
     """
     Applies the Priority Shield algorithm:
     - Categories with 0 points / ₹0 allocations are automatically excluded from absorbing cuts.
-    - Deficit is distributed among active, funded categories (points > 0) in ascending order.
-    - Top priority active categories are PROTECTED.
-    - Remaining deficit is tracked without false alarms.
+    - Top 2 highest-priority categories are PROTECTED.
+    - Deficit is distributed PROPORTIONALLY across all compressible categories
+      (categories outside the top 2 protected list that have points > 0).
+    - Safety floor: ensures no compressible category drops below 30% of its original budget.
+    - If deficit cannot be fully absorbed due to the safety floor, remaining deficit is flagged.
     
     Returns:
         dict with keys: new_budget, original_allocs, new_allocs,
-                        protected_cats, vulnerable_cats, zero_cats, remaining_deficit
+                        protected_cats, vulnerable_cats, compressible_cats, zero_cats, remaining_deficit
     """
     new_budget = total_budget * (1 - drop_pct / 100)
     deficit = total_budget - new_budget
@@ -478,47 +480,51 @@ def apply_priority_shield(points: dict, drop_pct: int, total_budget: float) -> d
 
     if len(sorted_active) >= 3:
         protected_cats = sorted_active[:2]
-        vulnerable_cats = sorted_active[2:]
+        compressible_cats = sorted_active[2:]
     elif len(sorted_active) == 2:
         protected_cats = [sorted_active[0]]
-        vulnerable_cats = [sorted_active[1]]
+        compressible_cats = [sorted_active[1]]
     elif len(sorted_active) == 1:
         protected_cats = [sorted_active[0]]
-        vulnerable_cats = [sorted_active[0]]
+        compressible_cats = []
     else:
         protected_cats = []
-        vulnerable_cats = []
+        compressible_cats = []
 
-    # Distribute deficit among active vulnerable categories (lowest points first)
-    remaining = deficit
-    absorbing_order = sorted(vulnerable_cats, key=lambda c: points[c])
+    total_compressible_orig = sum(original_allocs[cat] for cat in compressible_cats)
 
-    for cat in absorbing_order:
-        original = original_allocs[cat]
-        cut = min(remaining, original)
-        new_allocs[cat] = original - cut
-        remaining -= cut
-        if remaining <= 0:
-            break
-
-    # If vulnerable categories are exhausted and deficit remains, allow secondary active
-    # categories (excluding #1 top priority) to absorb spillover to prevent false deficit warnings
-    if remaining > 0 and len(sorted_active) > 1:
-        spillover_candidates = [c for c in reversed(sorted_active[1:]) if c not in vulnerable_cats]
-        for cat in spillover_candidates:
-            avail = new_allocs[cat]
-            cut = min(remaining, avail)
-            new_allocs[cat] = avail - cut
-            remaining -= cut
-            if remaining <= 0:
-                break
+    if total_compressible_orig > 0 and deficit > 0:
+        # Max reduction allowed per category is 70% of its original budget (retaining 30% safety floor)
+        max_possible_cut = 0.70 * total_compressible_orig
+        if deficit <= max_possible_cut:
+            # Proportional cut across all compressible categories
+            allocated_cut = 0.0
+            for i, cat in enumerate(compressible_cats):
+                orig = original_allocs[cat]
+                if i == len(compressible_cats) - 1:
+                    cut = round(deficit - allocated_cut, 2)
+                else:
+                    cut = round(deficit * (orig / total_compressible_orig), 2)
+                    allocated_cut += cut
+                new_allocs[cat] = round(orig - cut, 2)
+            remaining = 0.0
+        else:
+            # Safety floor enforced: cap compression at 70% cut (each retains exactly 30% floor)
+            for cat in compressible_cats:
+                orig = original_allocs[cat]
+                max_cut = round(0.70 * orig, 2)
+                new_allocs[cat] = round(orig - max_cut, 2)
+            remaining = round(deficit - max_possible_cut, 2)
+    else:
+        remaining = deficit if (compressible_cats or not sorted_active) and deficit > 0 else 0.0
 
     return {
         "new_budget": new_budget,
         "original_allocs": original_allocs,
         "new_allocs": new_allocs,
         "protected_cats": protected_cats,
-        "vulnerable_cats": vulnerable_cats,
+        "vulnerable_cats": compressible_cats,
+        "compressible_cats": compressible_cats,
         "zero_cats": zero_cats,
         "remaining_deficit": max(0.0, round(remaining, 2)),
     }
@@ -1062,8 +1068,8 @@ def render_step3():
         <div class="info-box">
         🛡️ <b>How the Priority Shield works:</b><br>
         Your <b>top 2 highest-priority categories</b> are fully protected.<br>
-        The budget deficit is absorbed entirely by your lower-priority categories.<br>
-        AI cards then suggest smart alternatives for compressed categories.
+        The deficit is <b>proportionally distributed</b> across all compressible categories.<br>
+        A <b>30% safety floor</b> prevents any category from dropping to zero.
         </div>
         """, unsafe_allow_html=True)
 
@@ -1131,9 +1137,10 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
 
             if result["remaining_deficit"] > 0:
                 st.warning(
-                    f"⚠️ {fmt_amount(result['remaining_deficit'])} deficit could not be "
-                    f"fully absorbed by low-priority categories alone. Consider renegotiating "
-                    f"protected categories slightly."
+                    "⚠️ Maximum safe compression reached. Consider reducing top priorities slightly or lowering event scale."
+                )
+                st.caption(
+                    f"💡 Unabsorbed deficit: {fmt_amount(result['remaining_deficit'])} (compressible categories are preserved at their 30% safety floor)."
                 )
         else:
             st.markdown("""
