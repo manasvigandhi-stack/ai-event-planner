@@ -287,6 +287,8 @@ def init_session_state():
     defaults = {
         # App navigation
         "step": 1,
+        "nav_page": "1. Vibe Calibration",
+        "nav_selection": "1. Vibe Calibration",
         "currency": "INR",
 
         # Step 1 — Vibe Calibration
@@ -306,12 +308,14 @@ def init_session_state():
         "budget_locked": False,
 
         # Step 3 — What-If Simulator
+        "has_budget_drop": False,
         "drop_pct": 20,
         "shield_result": None,
         "diy_cards": {},
 
         # Step 4 — Timeline
         "event_date": date.today() + timedelta(days=180),
+        "last_timeline_event_type": "Wedding",
         "task_done": {},
 
         # Step 4B — Vendor Parser
@@ -325,6 +329,12 @@ def init_session_state():
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+
+def set_nav_page(page_name: str):
+    """Helper to update navigation selection across both state keys."""
+    st.session_state["nav_page"] = page_name
+    st.session_state["nav_selection"] = page_name
 
 
 # =============================================================================
@@ -391,12 +401,14 @@ def gemini_generate(prompt: str, fallback: str) -> str:
 # UTILITY HELPERS
 # =============================================================================
 def currency_symbol() -> str:
-    return "₹" if st.session_state.currency == "INR" else "$"
+    curr = st.session_state.get("currency", "INR") if "currency" in st.session_state else "INR"
+    return "₹" if curr == "INR" else "$"
 
 
 def fmt_amount(amount: float) -> str:
     sym = currency_symbol()
-    if st.session_state.currency == "INR":
+    curr = st.session_state.get("currency", "INR") if "currency" in st.session_state else "INR"
+    if curr == "INR":
         # Indian number formatting: 1,00,000
         amount_int = int(round(amount))
         s = str(amount_int)
@@ -444,33 +456,61 @@ def get_points_dict() -> dict:
 def apply_priority_shield(points: dict, drop_pct: int, total_budget: float) -> dict:
     """
     Applies the Priority Shield algorithm:
-    - Sorts categories by point allocation (desc)
-    - Top 2 → PROTECTED (budget untouched)
-    - Bottom 2 → VULNERABLE (absorb all deficit, max 85% cut per category)
+    - Categories with 0 points / ₹0 allocations are automatically excluded from absorbing cuts.
+    - Deficit is distributed among active, funded categories (points > 0) in ascending order.
+    - Top priority active categories are PROTECTED.
+    - Remaining deficit is tracked without false alarms.
     
     Returns:
         dict with keys: new_budget, original_allocs, new_allocs,
-                        protected_cats, vulnerable_cats, remaining_deficit
+                        protected_cats, vulnerable_cats, zero_cats, remaining_deficit
     """
     new_budget = total_budget * (1 - drop_pct / 100)
     deficit = total_budget - new_budget
 
-    sorted_cats = sorted(points.items(), key=lambda x: x[1], reverse=True)
-    protected_cats = [sorted_cats[0][0], sorted_cats[1][0]]
-    vulnerable_cats = [sorted_cats[2][0], sorted_cats[3][0]]
-
     original_allocs = {cat: points_to_amount(pts, total_budget) for cat, pts in points.items()}
     new_allocs = dict(original_allocs)
 
+    # Active categories with points > 0 sorted descending
+    sorted_active = [cat for cat, pts in sorted(points.items(), key=lambda x: x[1], reverse=True) if pts > 0]
+    zero_cats = [cat for cat, pts in points.items() if pts == 0]
+
+    if len(sorted_active) >= 3:
+        protected_cats = sorted_active[:2]
+        vulnerable_cats = sorted_active[2:]
+    elif len(sorted_active) == 2:
+        protected_cats = [sorted_active[0]]
+        vulnerable_cats = [sorted_active[1]]
+    elif len(sorted_active) == 1:
+        protected_cats = [sorted_active[0]]
+        vulnerable_cats = [sorted_active[0]]
+    else:
+        protected_cats = []
+        vulnerable_cats = []
+
+    # Distribute deficit among active vulnerable categories (lowest points first)
     remaining = deficit
-    for cat in vulnerable_cats:
+    absorbing_order = sorted(vulnerable_cats, key=lambda c: points[c])
+
+    for cat in absorbing_order:
         original = original_allocs[cat]
-        max_cut = original * 0.85  # can cut at most 85%
-        cut = min(remaining, max_cut)
+        cut = min(remaining, original)
         new_allocs[cat] = original - cut
         remaining -= cut
         if remaining <= 0:
             break
+
+    # If vulnerable categories are exhausted and deficit remains, allow secondary active
+    # categories (excluding #1 top priority) to absorb spillover to prevent false deficit warnings
+    if remaining > 0 and len(sorted_active) > 1:
+        spillover_candidates = [c for c in reversed(sorted_active[1:]) if c not in vulnerable_cats]
+        for cat in spillover_candidates:
+            avail = new_allocs[cat]
+            cut = min(remaining, avail)
+            new_allocs[cat] = avail - cut
+            remaining -= cut
+            if remaining <= 0:
+                break
 
     return {
         "new_budget": new_budget,
@@ -478,7 +518,8 @@ def apply_priority_shield(points: dict, drop_pct: int, total_budget: float) -> d
         "new_allocs": new_allocs,
         "protected_cats": protected_cats,
         "vulnerable_cats": vulnerable_cats,
-        "remaining_deficit": max(0, remaining),
+        "zero_cats": zero_cats,
+        "remaining_deficit": max(0.0, round(remaining, 2)),
     }
 
 
@@ -577,9 +618,10 @@ def make_donut_chart(points: dict, total_budget: float) -> go.Figure:
         hovertemplate="<b>%{label}</b><br>%{value:,.0f}<br>%{percent}<extra></extra>",
     ))
     fig.update_layout(
-        margin=dict(t=20, b=20, l=20, r=20),
-        showlegend=False,
-        height=320,
+        margin=dict(t=20, b=40, l=20, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.4),
+        showlegend=True,
+        height=360,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         annotations=[dict(
@@ -597,7 +639,8 @@ def make_comparison_bar(original_allocs: dict, new_allocs: dict,
     revised = [new_allocs[k] for k in CATEGORIES]
     bar_colors_orig    = [CATEGORIES[k]["color"] for k in CATEGORIES]
     bar_colors_revised = [
-        "#10b981" if k in protected_cats else "#f59e0b"
+        "#10b981" if k in protected_cats and new_allocs[k] == original_allocs[k]
+        else ("#9ca3af" if original_allocs[k] == 0 else "#f59e0b")
         for k in CATEGORIES
     ]
 
@@ -631,6 +674,28 @@ def make_comparison_bar(original_allocs: dict, new_allocs: dict,
 def render_sidebar():
     with st.sidebar:
         st.markdown("## 🎉 AI Event Planner")
+        st.markdown("---")
+
+        # Sidebar Navigation Radio Menu
+        st.markdown("### 🧭 Navigation")
+        nav_options = [
+            "1. Vibe Calibration",
+            "2. Budget Engine & Pie Chart",
+            "3. Priority Shield Simulator",
+            "4. Timeline & Quote Parser",
+        ]
+        
+        current_nav = st.session_state.get("nav_page", nav_options[0])
+        default_idx = nav_options.index(current_nav) if current_nav in nav_options else 0
+
+        selected_page = st.radio(
+            "Navigate",
+            nav_options,
+            index=default_idx,
+            key="nav_selection",
+        )
+        st.session_state.nav_page = selected_page
+
         st.markdown("---")
 
         # Gemini API Key
@@ -671,16 +736,16 @@ def render_sidebar():
 
         st.markdown("---")
 
-        # Progress tracker
-        st.markdown("### 📊 Your Progress")
+        # Status Overview
+        st.markdown("### 📊 Status Overview")
         steps = [
             ("1", "Vibe Calibration", st.session_state.vibe_confirmed),
             ("2", "Budget Engine",    st.session_state.budget_locked),
             ("3", "What-If Shield",   st.session_state.shield_result is not None),
-            ("4", "Timeline & Vendor", False),  # always available after step 3
+            ("4", "Timeline & Vendor", True),
         ]
         for num, label, done in steps:
-            icon = "✅" if done else ("🔓" if int(num) <= st.session_state.step else "🔒")
+            icon = "✅" if done else "⏳"
             st.markdown(f"{icon} **Step {num}**: {label}")
 
         st.markdown("---")
@@ -812,10 +877,14 @@ Keep it under 85 words. Be specific, poetic, and uplifting — not generic."""
             if st.button("✅ Lock In My Vibe & Proceed →", use_container_width=True, type="primary"):
                 st.session_state.vibe_confirmed = True
                 st.session_state.step = max(st.session_state.step, 2)
+                set_nav_page("2. Budget Engine & Pie Chart")
                 st.rerun()
 
     if st.session_state.vibe_confirmed:
-        st.success("✅ Vibe locked! Scroll down to configure your budget.")
+        st.success("✅ Vibe locked! You can proceed to the Budget Engine.")
+        if st.button("Go to Step 2: Budget Engine & Pie Chart →", type="secondary"):
+            set_nav_page("2. Budget Engine & Pie Chart")
+            st.rerun()
 
 
 # =============================================================================
@@ -898,13 +967,17 @@ def render_step2():
     st.markdown("")
     lock_disabled = (current_total != 100) or st.session_state.budget_locked
     if st.session_state.budget_locked:
-        st.info("🔒 Budget is locked. Proceed to the What-If Simulator below.")
-        col_unlock, _ = st.columns([1, 3])
+        st.info("🔒 Budget is locked.")
+        col_unlock, col_next = st.columns([1, 2])
         with col_unlock:
             if st.button("🔓 Unlock & Edit Budget"):
                 st.session_state.budget_locked = False
                 st.session_state.shield_result = None
                 st.session_state.diy_cards = {}
+                st.rerun()
+        with col_next:
+            if st.button("Go to Step 3: Priority Shield Simulator →", type="primary"):
+                set_nav_page("3. Priority Shield Simulator")
                 st.rerun()
     else:
         if st.button(
@@ -915,6 +988,7 @@ def render_step2():
         ):
             st.session_state.budget_locked = True
             st.session_state.step = max(st.session_state.step, 3)
+            set_nav_page("3. Priority Shield Simulator")
             st.rerun()
 
 
@@ -922,13 +996,41 @@ def render_step2():
 # STEP 3 — WHAT-IF SIMULATOR & PRIORITY SHIELD
 # =============================================================================
 def render_step3():
-    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
     st.markdown("""
     <div class="step-banner">
         <h2>⚡ Step 3 — What-If Budget Drop Simulator</h2>
         <p>Simulate an unexpected budget cut. The Priority Shield protects your top priorities automatically.</p>
     </div>
     """, unsafe_allow_html=True)
+
+    # Optional Budget Drop Toggle
+    has_budget_drop = st.checkbox(
+        "Did your budget experience an unexpected drop / cut?",
+        value=st.session_state.get("has_budget_drop", False),
+        key="has_budget_drop",
+    )
+
+    if not has_budget_drop:
+        st.markdown("""
+        <div style="background:#ecfdf5; border-left: 5px solid #10b981; border-radius: 10px; padding: 1.2rem 1.4rem; margin: 1.2rem 0; color: #065f46;">
+            <h4 style="margin:0 0 0.4rem 0; color:#047857; font-size:1.05rem;">✅ Budget is stable!</h4>
+            <p style="margin:0; font-size:0.95rem; line-height:1.5;">Budget is stable! No cuts simulated — your original allocations remain fully protected.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("#### 📋 Current Stable Allocations")
+        pts = get_points_dict()
+        allocs = {k: points_to_amount(v, st.session_state.total_budget) for k, v in pts.items()}
+        cols = st.columns(4)
+        for i, (k, info) in enumerate(CATEGORIES.items()):
+            with cols[i]:
+                st.metric(info["label"], fmt_amount(allocs[k]), f"{pts[k]} pts")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Proceed to Step 4: Timeline & Quote Parser →", type="primary"):
+            set_nav_page("4. Timeline & Quote Parser")
+            st.rerun()
+        return
 
     col_ctrl, col_info = st.columns([1, 1], gap="large")
 
@@ -970,12 +1072,12 @@ def render_step3():
             result = apply_priority_shield(pts, drop_pct, st.session_state.total_budget)
             st.session_state.shield_result = result
             st.session_state.step = max(st.session_state.step, 4)
-            # Generate DIY cards for vulnerable categories
+            # Generate DIY cards for vulnerable categories that were actually funded
             diy_cards = {}
             for cat in result["vulnerable_cats"]:
                 orig = result["original_allocs"][cat]
                 new  = result["new_allocs"][cat]
-                if new < orig:
+                if orig > 0 and new < orig:
                     cat_label = CATEGORIES[cat]["label"]
                     prompt = f"""The user's {cat_label} budget was cut from {fmt_amount(orig)} to {fmt_amount(new)} due to an unexpected budget drop ({drop_pct}% overall).
 Event type: {st.session_state.event_type}
@@ -1007,16 +1109,21 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
             st.markdown("#### 🛡️ Shield Status")
             for cat_key in CATEGORIES:
                 label = CATEGORIES[cat_key]["label"]
-                is_protected = cat_key in result["protected_cats"]
-                badge = '<span class="badge-shield">🛡️ PROTECTED</span>' if is_protected \
-                        else '<span class="badge-compressed">⚡ COMPRESSED</span>'
                 orig = result["original_allocs"][cat_key]
                 new  = result["new_allocs"][cat_key]
                 diff = new - orig
-                diff_str = f"({fmt_amount(diff)})" if diff < 0 else ""
+                diff_str = f" ({fmt_amount(diff)})" if diff < 0 else ""
+
+                if orig == 0:
+                    badge = '<span style="background:#9ca3af;color:white;border-radius:6px;padding:2px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">⚪ EXCLUDED (0 PTS)</span>'
+                elif cat_key in result["protected_cats"] and diff == 0:
+                    badge = '<span class="badge-shield">🛡️ PROTECTED</span>'
+                else:
+                    badge = '<span class="badge-compressed">⚡ COMPRESSED</span>'
+
                 st.markdown(
                     f"**{label}** {badge}<br>"
-                    f"<small>{fmt_amount(orig)} → **{fmt_amount(new)}** {diff_str}</small>",
+                    f"<small>{fmt_amount(orig)} → **{fmt_amount(new)}**{diff_str}</small>",
                     unsafe_allow_html=True,
                 )
                 st.markdown("")
@@ -1068,6 +1175,11 @@ Format ONLY as 3 bullet points (•), each under 25 words. No headers."""
                         if line:
                             st.markdown(f"• {line}")
 
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Proceed to Step 4: Timeline & Quote Parser →", type="primary"):
+            set_nav_page("4. Timeline & Quote Parser")
+            st.rerun()
+
 
 # =============================================================================
 # STEP 4A — SMART TIMELINE
@@ -1103,10 +1215,18 @@ def render_step4_timeline():
         TASK_TEMPLATES.get("Wedding"),
     )
 
-    # Completion stats — use enumerate for stable integer keys
+    # Detect event type change to avoid stale checklist states
+    if st.session_state.get("last_timeline_event_type") != st.session_state.event_type:
+        for k in list(st.session_state.keys()):
+            if k.startswith("task_"):
+                del st.session_state[k]
+        st.session_state.task_done = {}
+        st.session_state.last_timeline_event_type = st.session_state.event_type
+
+    # Completion stats: evaluate directly from widget state keys
     done_count = sum(
-        1 for idx, t in enumerate(tasks)
-        if st.session_state.task_done.get(idx, False)
+        1 for idx in range(len(tasks))
+        if st.session_state.get(f"task_{idx}", False)
     )
     completion_pct = int((done_count / len(tasks)) * 100) if tasks else 0
 
@@ -1128,7 +1248,8 @@ def render_step4_timeline():
         task_date   = event_date - timedelta(days=days_before)
         days_until  = (task_date - date.today()).days
 
-        is_done = st.session_state.task_done.get(idx, False)
+        # Check widget state directly for instantaneous reactivity
+        is_done = bool(st.session_state.get(f"task_{idx}", False))
 
         # Urgency classification
         if is_done:
@@ -1149,7 +1270,6 @@ def render_step4_timeline():
         with col_check:
             checked = st.checkbox(
                 "done",
-                value=is_done,
                 key=f"task_{idx}",
                 label_visibility="collapsed",
             )
@@ -1350,21 +1470,20 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Always render Step 1
-    render_step1()
+    # Route according to Sidebar Navigation Radio Menu
+    current_page = st.session_state.get("nav_page", "1. Vibe Calibration")
 
-    # Step 2 — unlocked after vibe confirmation
-    if st.session_state.vibe_confirmed:
+    if current_page == "1. Vibe Calibration":
+        render_step1()
+    elif current_page == "2. Budget Engine & Pie Chart":
         render_step2()
-
-    # Step 3 — unlocked after budget lock
-    if st.session_state.budget_locked:
+    elif current_page == "3. Priority Shield Simulator":
         render_step3()
-
-    # Step 4 — unlocked after Step 3 simulation (or after budget lock for flexibility)
-    if st.session_state.step >= 4:
+    elif current_page == "4. Timeline & Quote Parser":
         render_step4_timeline()
         render_step4_vendor()
+    else:
+        render_step1()
 
     # Footer
     st.markdown("<br><hr>", unsafe_allow_html=True)
