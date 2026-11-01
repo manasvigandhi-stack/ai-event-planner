@@ -98,7 +98,7 @@ When a budget drop is simulated:
 
 ---
 
-## 🤖 AI Features (powered by Gemini 1.5 Flash)
+## 🤖 AI Features (powered by Gemini 3.8 Flash)
 
 - **Reality Preview Summary** — personalized vibe description based on style tags & Hard Nos
 - **DIY Recommendation Cards** — context-aware budget-saving alternatives

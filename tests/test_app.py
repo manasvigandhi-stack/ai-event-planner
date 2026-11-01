@@ -8,7 +8,7 @@ Covers:
 - Vendor quote parser (line items, taxes, hidden flags, missing items)
 """
 
-import pytest
+from unittest.mock import MagicMock, patch
 import streamlit as st
 from app import (
     points_to_amount,
@@ -17,7 +17,8 @@ from app import (
     apply_priority_shield,
     parse_vendor_quote,
     CATEGORIES,
-    EVENT_TYPES,
+    gemini_generate_rest,
+    gemini_generate,
 )
 
 
@@ -207,4 +208,49 @@ def test_parse_vendor_quote_hidden_flags():
     assert len(parsed["hidden_flags"]) > 0
     flags_text = " ".join(parsed["hidden_flags"]).lower()
     assert "overtime" in flags_text or "cleanup" in flags_text
+
+
+# =============================================================================
+# 5. GEMINI AI INTEGRATION & REGRESSION TESTS
+# =============================================================================
+def test_gemini_generate_rest_endpoint_and_headers():
+    """Verify Gemini REST uses gemini-3.8-flash, passes API key in header, and omits key from URL."""
+    fake_key = "AIzaSyFakeKey12345"
+    prompt = "Create a wedding vibe profile"
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "candidates": [
+            {"content": {"parts": [{"text": "Warm and romantic celebration."}]}}
+        ]
+    }
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        result = gemini_generate_rest(prompt, fake_key)
+        assert result == "Warm and romantic celebration."
+        mock_post.assert_called_once()
+        called_args, called_kwargs = mock_post.call_args
+        target_url = called_args[0] if called_args else called_kwargs.get("url", "")
+        # Verify gemini-3.8-flash endpoint
+        assert "gemini-3.8-flash:generateContent" in target_url
+        # Verify API key is absent from URL query
+        assert fake_key not in target_url
+        # Verify API key is passed through x-goog-api-key header
+        headers = called_kwargs.get("headers", {})
+        assert headers.get("x-goog-api-key") == fake_key
+
+
+def test_gemini_generate_rest_fallback_when_sdk_unavailable():
+    """Verify gemini_generate calls REST fallback when _GENAI_AVAILABLE is False."""
+    st.session_state["gemini_key"] = "AIzaSyFakeKey67890"
+    prompt = "Describe event style"
+    fallback_text = "Default smart template description."
+
+    with patch("app._GENAI_AVAILABLE", False), patch(
+        "app.gemini_generate_rest", return_value="Live AI generated response via REST"
+    ) as mock_rest:
+        result = gemini_generate(prompt, fallback_text)
+        assert result == "Live AI generated response via REST"
+        mock_rest.assert_called_once_with(prompt, "AIzaSyFakeKey67890")
+
 

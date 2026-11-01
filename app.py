@@ -62,15 +62,15 @@ html, body, [class*="css"] {
 
 /* ── Step header banner ── */
 .step-banner {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #4f46e5 0%, #6d28d9 100%);
     border-radius: 16px;
     padding: 1.2rem 1.6rem;
     color: white;
     margin-bottom: 1.4rem;
-    box-shadow: 0 4px 20px rgba(102,126,234,0.35);
+    box-shadow: 0 4px 20px rgba(79,70,229,0.35);
 }
 .step-banner h2 { margin: 0; font-size: 1.45rem; font-weight: 700; }
-.step-banner p  { margin: 0.25rem 0 0; opacity: 0.88; font-size: 0.92rem; }
+.step-banner p  { margin: 0.25rem 0 0; opacity: 1; font-size: 0.92rem; }
 
 /* ── Vibe summary card ── */
 .vibe-card {
@@ -100,7 +100,7 @@ html, body, [class*="css"] {
 /* ── Shield / compression badges ── */
 .badge-shield {
     display: inline-block;
-    background: #10b981;
+    background: #047857;
     color: white;
     border-radius: 6px;
     padding: 2px 10px;
@@ -111,7 +111,7 @@ html, body, [class*="css"] {
 }
 .badge-compressed {
     display: inline-block;
-    background: #f59e0b;
+    background: #b45309;
     color: white;
     border-radius: 6px;
     padding: 2px 10px;
@@ -124,7 +124,7 @@ html, body, [class*="css"] {
 /* ── Vendor quote table ── */
 .vendor-table { width: 100%; border-collapse: collapse; font-size: 0.93rem; }
 .vendor-table th {
-    background: #6366f1; color: white;
+    background: #4f46e5; color: white;
     padding: 8px 12px; text-align: left;
 }
 .vendor-table td { padding: 7px 12px; border-bottom: 1px solid #e5e7eb; }
@@ -134,8 +134,8 @@ html, body, [class*="css"] {
 
 /* ── Progress timeline ── */
 .task-overdue   { color: #dc2626; font-weight: 600; }
-.task-urgent    { color: #d97706; font-weight: 500; }
-.task-ontrack   { color: #059669; }
+.task-urgent    { color: #92400e; font-weight: 500; }
+.task-ontrack   { color: #047857; }
 .task-done      { color: #4b5563; text-decoration: line-through; }
 
 /* ── Metric cards ── */
@@ -384,7 +384,7 @@ def set_nav_page(page_name: str) -> None:
 def get_cached_gemini_model(api_key: str) -> Any:
     """Load and cache the Gemini GenerativeModel instance for a given API key."""
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-1.5-flash")
+    return genai.GenerativeModel("gemini-3.8-flash")
 
 
 def get_gemini_model() -> Any:
@@ -403,7 +403,7 @@ def get_gemini_model() -> Any:
 
 def gemini_generate_rest(prompt: str, api_key: str) -> str:
     """Call Gemini REST API directly using standard requests library."""
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -771,10 +771,11 @@ def render_sidebar() -> None:
             "Left blank, the app runs seamlessly on built-in smart templates."
         )
 
-        if _GENAI_AVAILABLE and st.session_state.gemini_key:
-            st.markdown("✅ *AI features active*")
-        elif not _GENAI_AVAILABLE:
-            st.markdown("⚠️ *google-generativeai not installed*")
+        if st.session_state.gemini_key:
+            if _GENAI_AVAILABLE:
+                st.markdown("✅ *AI features active*")
+            else:
+                st.markdown("✅ *AI features active (REST fallback)*")
         else:
             st.markdown("💡 *Using smart templates*")
 
@@ -998,7 +999,7 @@ def render_step2() -> None:
         current_total = total_points()
         st.markdown("---")
         if current_total == 100:
-            st.success(f"✅ Perfect! All **100 points** allocated.")
+            st.success("✅ Perfect! All **100 points** allocated.")
         elif current_total < 100:
             remaining = 100 - current_total
             st.error(f"🔴 Total: **{current_total}/100** — assign **{remaining}** more points.")
@@ -1476,8 +1477,8 @@ def render_step4_vendor() -> None:
             with st.spinner("Parsing your quote…"):
                 parse_result = parse_vendor_quote(quote_text, st.session_state.event_type)
 
-                # If Gemini available, enhance with AI commentary
-                if st.session_state.gemini_key and _GENAI_AVAILABLE:
+                # If Gemini API key provided, enhance with AI commentary (SDK or REST fallback)
+                if st.session_state.gemini_key.strip():
                     ai_prompt = f"""You are an expert event budget advisor.
 A vendor sent this quote for a {st.session_state.event_type}:
 
