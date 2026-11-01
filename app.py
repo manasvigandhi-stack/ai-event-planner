@@ -177,7 +177,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-EVENT_TYPES = ["Wedding", "Birthday", "Community Gathering", "Anniversary"]
+EVENT_TYPES = ["Wedding", "Birthday", "Community Gathering", "Anniversary", "Other"]
 
 STYLE_TAGS = [
     "Traditional", "Intimate", "Modern Minimalist", "Bohemian", "Grand",
@@ -291,6 +291,7 @@ def init_session_state():
 
         # Step 1 — Vibe Calibration
         "event_type": "Wedding",
+        "custom_event_type": "",
         "style_tags": [],
         "hard_nos": "",
         "vibe_confirmed": False,
@@ -630,7 +631,6 @@ def make_comparison_bar(original_allocs: dict, new_allocs: dict,
 def render_sidebar():
     with st.sidebar:
         st.markdown("## 🎉 AI Event Planner")
-        st.markdown("*Build with AI Challenge 5*")
         st.markdown("---")
 
         # Gemini API Key
@@ -644,6 +644,11 @@ def render_sidebar():
         )
         if key_input != st.session_state.gemini_key:
             st.session_state.gemini_key = key_input
+
+        st.caption(
+            "Optional: Enter your key for live AI-generated vibe customizations and quote parsing. "
+            "Left blank, the app runs seamlessly on built-in smart templates."
+        )
 
         if _GENAI_AVAILABLE and st.session_state.gemini_key:
             st.markdown("✅ *AI features active*")
@@ -708,13 +713,29 @@ def render_step1():
 
     with col1:
         st.markdown("#### 🎊 Event Type")
+        # Determine which option to pre-select in the dropdown
+        _stored = st.session_state.event_type
+        _sel_index = EVENT_TYPES.index(_stored) if _stored in EVENT_TYPES else EVENT_TYPES.index("Other")
         event_type = st.selectbox(
             "What kind of event are you planning?",
             EVENT_TYPES,
-            index=EVENT_TYPES.index(st.session_state.event_type),
+            index=_sel_index,
             label_visibility="collapsed",
         )
-        st.session_state.event_type = event_type
+        if event_type == "Other":
+            custom = st.text_input(
+                "Specify your event type",
+                value=st.session_state.custom_event_type,
+                placeholder="e.g., Graduation Party, Housewarming…",
+            )
+            st.session_state.custom_event_type = custom
+            if custom.strip():
+                st.session_state.event_type = custom.strip()
+            else:
+                st.session_state.event_type = "Other"
+        else:
+            st.session_state.event_type = event_type
+            st.session_state.custom_event_type = ""
 
         st.markdown("#### 🎨 Style Tags")
         st.caption("Select all that resonate with your vision")
@@ -818,10 +839,10 @@ def render_step2():
         st.markdown("#### 💵 Base Total Budget")
         budget = st.number_input(
             f"Total budget ({sym})",
-            min_value=10000.0 if st.session_state.currency == "INR" else 500.0,
+            min_value=1000.0 if st.session_state.currency == "INR" else 10.0,
             max_value=100_000_000.0,
             value=float(st.session_state.total_budget),
-            step=10000.0 if st.session_state.currency == "INR" else 500.0,
+            step=1000.0 if st.session_state.currency == "INR" else 10.0,
             format="%.0f",
             label_visibility="collapsed",
             disabled=st.session_state.budget_locked,
@@ -1077,12 +1098,15 @@ def render_step4_timeline():
         else:
             st.success("🎉 Event day is today or has passed!")
 
-    tasks = TASK_TEMPLATES.get(st.session_state.event_type, TASK_TEMPLATES["Wedding"])
+    tasks = TASK_TEMPLATES.get(
+        st.session_state.event_type,
+        TASK_TEMPLATES.get("Wedding"),
+    )
 
-    # Completion stats
+    # Completion stats — use enumerate for stable integer keys
     done_count = sum(
-        1 for t in tasks
-        if st.session_state.task_done.get(t["task"], False)
+        1 for idx, t in enumerate(tasks)
+        if st.session_state.task_done.get(idx, False)
     )
     completion_pct = int((done_count / len(tasks)) * 100) if tasks else 0
 
@@ -1096,7 +1120,7 @@ def render_step4_timeline():
     st.caption("Tasks are sorted chronologically. Dependencies are shown with → arrows.")
 
     # Group by category for cleaner display
-    for task_info in tasks:
+    for idx, task_info in enumerate(tasks):
         days_before = task_info["days_before"]
         task_name   = task_info["task"]
         category    = task_info["category"]
@@ -1104,7 +1128,7 @@ def render_step4_timeline():
         task_date   = event_date - timedelta(days=days_before)
         days_until  = (task_date - date.today()).days
 
-        is_done = st.session_state.task_done.get(task_name, False)
+        is_done = st.session_state.task_done.get(idx, False)
 
         # Urgency classification
         if is_done:
@@ -1126,10 +1150,10 @@ def render_step4_timeline():
             checked = st.checkbox(
                 "done",
                 value=is_done,
-                key=f"task_{task_name}",
+                key=f"task_{idx}",
                 label_visibility="collapsed",
             )
-            st.session_state.task_done[task_name] = checked
+            st.session_state.task_done[idx] = checked
 
         with col_detail:
             dep_str = ""
@@ -1321,7 +1345,7 @@ def main():
             🎉 AI Event Planner
         </h1>
         <p style="color:#6b7280;margin:0.3rem 0 0;font-size:1rem;">
-            Build with AI Challenge 5 — Google for Developers
+            Your AI-powered event planning assistant
         </p>
     </div>
     """, unsafe_allow_html=True)
